@@ -1,26 +1,105 @@
 # tensorizer
 
-[![CI](https://github.com/coreweave/tensorizer/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/coreweave/tensorizer/actions/workflows/build-and-deploy.yml)
-[![Container Scan](https://img.shields.io/badge/scan-trivy-blue)](#)
-[![Lint](https://img.shields.io/badge/lint-black%20%2B%20isort-brightgreen)](#)
+[![CI](https://github.com/TylrDn/tensorizer/actions/workflows/build-and-deploy.yml/badge.svg)](https://github.com/TylrDn/tensorizer/actions/workflows/build-and-deploy.yml)
+[![Tests](https://github.com/TylrDn/tensorizer/actions/workflows/test.yml/badge.svg)](https://github.com/TylrDn/tensorizer/actions/workflows/test.yml)
+[![Container Scan](https://img.shields.io/badge/scan-trivy-blue)](https://github.com/TylrDn/tensorizer/blob/main/.github/workflows/build-and-deploy.yml)
 
-CoreWeave full‑stack example showing SUNK, Tensorizer, vLLM and observability.
+Module, Model, and Tensor Serialization/Deserialization — plus a Kubernetes
+deployment layer added by this fork.
+
+---
+
+## About this fork
+
+**This repository is a fork of [coreweave/tensorizer](https://github.com/coreweave/tensorizer),
+maintained by Taylor Dean ([@TylrDn](https://github.com/TylrDn)).**
+
+The split is worth stating plainly, because the two halves of this README have
+different authors:
+
+* **Upstream, CoreWeave's work.** The `tensorizer` library itself — everything
+  under `tensorizer/`, `tests/`, `proto/`, the upstream examples, and all of the
+  documentation reproduced under
+  [Upstream tensorizer documentation](#upstream-tensorizer-documentation) below.
+  **Every performance figure in this README is CoreWeave's**, including the
+  `~5GB/s` GPT-J number and the letter-value deserialization plot, which come
+  from CoreWeave's published `tensorizer` 2.5.0 benchmarks. Those numbers have
+  **not** been independently reproduced in this fork, and this fork ships no
+  benchmark of its own. This fork is currently based on upstream `v2.12.0`.
+* **This fork's work.** A deployment layer that takes a tensorized model from
+  serialization all the way to a served, observable vLLM endpoint on Kubernetes.
+
+### What this fork adds
+
+| Path | What it is |
+| --- | --- |
+| [`helm/tensorizer-vllm/`](helm/tensorizer-vllm/) | Helm chart deploying vLLM against a tensorized model URI — `Chart.yaml`, `values.yaml`, and Deployment/Service/Ingress templates. |
+| [`k8s/knative-service.yaml`](k8s/knative-service.yaml) | Knative Service with `minScale: "0"` for scale-to-zero serving. |
+| [`k8s/rbac.yaml`](k8s/rbac.yaml) | `tensorizer-sa` ServiceAccount, a namespaced Role (`get`/`list` on pods), and the RoleBinding. |
+| [`k8s/networkpolicy.yaml`](k8s/networkpolicy.yaml) | Ingress on TCP/8000, egress on TCP/443. |
+| [`gitops/argocd/app.yaml`](gitops/argocd/app.yaml) | ArgoCD Application with automated sync, prune and self-heal. |
+| [`security/policy-notes.md`](security/policy-notes.md) | Illustrative RBAC/NetworkPolicy snippets and image-signing notes. |
+| [`.github/workflows/build-and-deploy.yml`](.github/workflows/build-and-deploy.yml) | Build → Trivy scan → push to GHCR → `helm upgrade --install`. |
+| [`examples/tensorizer/`](examples/tensorizer/), [`examples/vllm/`](examples/vllm/), [`examples/sunk/`](examples/sunk/), [`examples/observability/`](examples/observability/) | Fork-added runnable examples for the deployment path. |
+| [`docs/`](docs/) (fork-authored pages) | The Quickstart Map below, minus upstream's `encryption.md` and `subprocess-serialization.md`. |
+| [`CHANGELOG-FORK.md`](CHANGELOG-FORK.md) | Deployment-layer changelog, versioned independently of upstream releases. |
+
+Start with the **[full-stack example](docs/full-stack-example.md)**, which walks
+the whole path: serialize a model → publish to S3/HTTP → deploy via Helm or
+ArgoCD → vLLM loads the tensorized weights → verify with metrics. It also lists
+the layer's [known gaps](docs/full-stack-example.md#known-gaps-in-this-layer)
+explicitly, as does [`docs/security.md`](docs/security.md).
 
 ![Architecture](docs/img/architecture.svg)
 
-## Quickstart Map
+*The diagram is a four-box sketch (Dev → CI/CD → Object Storage → K8s/vLLM, with
+Grafana) and does not depict SUNK/Slurm, ArgoCD, Knative, or the RBAC and
+NetworkPolicy assets. See [`docs/full-stack-example.md`](docs/full-stack-example.md)
+for the current inventory.*
 
+### Quickstart Map
+
+Fork-authored:
+
+- [Full-Stack Example (start here)](docs/full-stack-example.md)
 - [Overview](docs/overview.md)
 - [SUNK](docs/sunk.md)
 - [Schedule K8s Pods with Slurm](docs/schedule-k8s-with-slurm.md)
-- [Tensorizer](docs/tensorizer.md)
+- [Tensorizer End-to-End](docs/tensorizer.md)
 - [vLLM](docs/vllm.md)
 - [Observability](docs/observability.md)
 - [CI/CD](docs/cicd.md)
-- [Security](docs/cks.md)
+- [GitOps with ArgoCD](docs/gitops.md)
+- [Security Posture](docs/security.md)
+- [CKS Security Notes](docs/cks.md)
+- [Fork Changelog](CHANGELOG-FORK.md)
 
-# tensorizer
-Module, Model, and Tensor Serialization/Deserialization
+Upstream (CoreWeave):
+
+- [Tensor Encryption](docs/encryption.md)
+- [Subprocess Serialization](docs/subprocess-serialization.md)
+- [Upstream Changelog](CHANGELOG.md)
+
+### CI status, honestly
+
+The badges above point at **this fork's** workflows, not upstream's.
+`build-and-deploy.yml` builds an image, scans it with Trivy, pushes it, and runs
+`helm upgrade --install`; `test.yml` runs upstream's Python test suite. Trivy is
+non-blocking as configured. `black`/`isort` run only through
+[`.pre-commit-config.yaml`](.pre-commit-config.yaml) and are **not** enforced by
+any workflow, so the previous "Lint" badge was removed rather than left as
+decoration. Details in [`docs/security.md`](docs/security.md#4-image-provenance-and-scanning--reality-vs-aspiration).
+
+---
+
+## Upstream tensorizer documentation
+
+*Everything below this line is CoreWeave's documentation, inherited from
+[coreweave/tensorizer](https://github.com/coreweave/tensorizer). All performance
+figures in it are CoreWeave's published measurements and have not been
+independently reproduced in this fork.*
+
+## Module, Model, and Tensor Serialization/Deserialization
 
 ## TLDR
 Extremely fast model loads from HTTP/HTTPS, Redis, and S3 endpoints.
