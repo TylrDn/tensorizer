@@ -7,7 +7,7 @@ spec:
     server: https://kubernetes.default.svc
     namespace: default
   source:
-    repoURL: https://github.com/coreweave/tensorizer
+    repoURL: https://github.com/TylrDn/tensorizer
     path: helm/tensorizer-vllm
     targetRevision: main
   project: default
