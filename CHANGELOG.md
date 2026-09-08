@@ -1,5 +1,7 @@
 # Changelog
 
+> Fork note: this file tracks upstream `tensorizer` library releases. Changes to this fork's Kubernetes/Helm/GitOps deployment layer are recorded separately in [CHANGELOG-FORK.md](CHANGELOG-FORK.md).
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
