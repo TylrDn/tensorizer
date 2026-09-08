@@ -1,14 +1,25 @@
 # Overview
 
-This repository demonstrates a CoreWeave aligned stack for high performance model serving.
+This document belongs to the deployment layer added by the
+[TylrDn/tensorizer](https://github.com/TylrDn/tensorizer) fork; the `tensorizer`
+library itself is upstream
+[CoreWeave's](https://github.com/coreweave/tensorizer). See
+[About this fork](../README.md#about-this-fork) for the split.
+
+The layer demonstrates a CoreWeave-aligned stack for high performance model serving.
 It combines **Slurm on Kubernetes (SUNK)**, **Tensorizer**, **vLLM**, and CoreWeave
 observability to provide fast, reproducible, and secure deployments.
+
+**Want the whole path in one page?** Read the
+[full-stack example](full-stack-example.md) — serialize, publish, deploy, serve,
+verify — including a values table for the Helm chart, a troubleshooting table,
+and the layer's known gaps.
 
 ## Five‑Minute Quickstart
 
 ```bash
 # clone and enter the repo
-git clone https://github.com/coreweave/tensorizer
+git clone https://github.com/TylrDn/tensorizer
 cd tensorizer
 
 # run the Tensorizer demo
@@ -30,4 +41,7 @@ The following documents provide more detail:
 - [vLLM](vllm.md)
 - [Observability](observability.md)
 - [CI/CD](cicd.md)
-- [Security](cks.md)
+- [GitOps with ArgoCD](gitops.md)
+- [Security Posture](security.md)
+- [CKS Security Notes](cks.md)
+- [Full-Stack Example](full-stack-example.md)
