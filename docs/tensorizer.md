@@ -21,4 +21,12 @@ the model directly to CPU or GPU memory.
 4. KNative/KServe benefit from faster cold starts because weights are fetched
 on demand rather than baked into the container.
 
-Throughput expectations match network limits: on 40GbE expect ~5GB/s.
+## A note on throughput numbers
+
+Deserialization is network-bound, so throughput tracks your link speed. The
+often-quoted `~5GB/s` on 40GbE (GPT-J, `20GB`) and the letter-value plot in the
+[README](../README.md) are **CoreWeave's published benchmarks** for upstream
+`tensorizer` (release 2.5.0 methodology, `examples/benchmark_buffer_size`). They
+have **not** been independently reproduced in this fork, and this deployment
+layer ships no benchmark of its own. Measure your own cluster before quoting a
+number — see [observability.md](observability.md) for what to watch.
