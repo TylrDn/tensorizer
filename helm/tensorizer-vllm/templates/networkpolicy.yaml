@@ -1,0 +1,56 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "tensorizer-vllm.labels" . | nindent 4 }}
+spec:
+  # Templated from the chart's own selector labels. The standalone policy in
+  # k8s/networkpolicy.yaml hard-codes `app: tensorizer` and therefore selects
+  # nothing unless the release happens to be named "tensorizer".
+  podSelector:
+    matchLabels:
+      {{- include "tensorizer-vllm.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressNamespaceSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    # DNS. Without this the Pod cannot resolve the object-storage endpoint, and
+    # model loading hangs rather than failing with anything legible.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dnsNamespaceSelector | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # In-cluster HTTPS.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- with .Values.networkPolicy.egressIPBlocks }}
+    # Off-cluster object storage. A namespaceSelector cannot express an external
+    # destination, so reaching S3 outside the cluster needs an explicit ipBlock.
+    - to:
+        {{- range . }}
+        - ipBlock:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+{{- end }}

@@ -1,10 +1,30 @@
+{{- if .Values.ingress.enabled }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ .Release.Name }}
+  labels:
+    {{- include "tensorizer-vllm.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
+  {{- with .Values.ingress.className }}
+  # Without an ingressClassName the cluster's default IngressClass is used, and
+  # a cluster with no default silently leaves the Ingress unserved.
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | default .Values.host }}
+      {{- with .Values.ingress.tls.secretName }}
+      secretName: {{ . }}
+      {{- end }}
+  {{- end }}
   rules:
-    - host: {{ .Values.host }}
+    - host: {{ .Values.ingress.host | default .Values.host }}
       http:
         paths:
           - path: /
@@ -14,3 +34,4 @@ spec:
                 name: {{ .Release.Name }}
                 port:
                   number: 80
+{{- end }}

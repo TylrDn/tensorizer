@@ -20,10 +20,99 @@ and the deployment layer adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 **Scope of "validated".** Validation for this layer means: YAML parses,
-`helm lint helm/tensorizer-vllm` passes, and documented commands and values were
-read from the committed files. It does **not** mean the stack was deployed to a
-live GPU cluster, and no performance claim in this repository was measured by
-this fork — see the attribution note in the [README](README.md#about-this-fork).
+`helm lint helm/tensorizer-vllm` passes, the chart renders under
+`helm template` with defaults and with every feature enabled, and both renders
+plus the raw manifests pass `kubeconform -strict`. From `deploy-0.3.0` this runs
+in CI (`.github/workflows/manifests.yml`) rather than by hand. It does **not**
+mean the stack was deployed to a live GPU cluster, and no performance claim in
+this repository was measured by this fork — see the attribution note in the
+[README](README.md#about-this-fork).
+
+---
+
+## [deploy-0.3.0] - 2026-09-08
+
+Upstream base: unchanged — `v2.12.0` (fork branched at `92bd5bc`).
+
+Hardens the deployment manifests. `deploy-0.2.0` documented these defects in
+`docs/security.md` without fixing them; this release fixes them and rewrites
+that document to separate what is now hardened from what remains open.
+
+### Security
+
+- **Chart runs under its own ServiceAccount.** `deployment.yaml` set no
+  `serviceAccountName`, so the Pod ran as the namespace `default` account and
+  the Role in `k8s/rbac.yaml` was bound to nothing the chart created. The chart
+  now creates and uses its own account, with **no Role bound to it** — a
+  serving container has no reason to reach the API server.
+  `automountServiceAccountToken: false` is set on both the account and the Pod.
+- **NetworkPolicy now selects the pods it protects.** The policy matched
+  `app: tensorizer` while the chart labelled pods `app: <release>`, so unless a
+  release was literally named `tensorizer` the policy applied to nothing. The
+  chart ships a NetworkPolicy templated from the same helper that produces the
+  Deployment's labels, and CI asserts the selector matches. The standalone
+  `k8s/networkpolicy.yaml` keeps its selector and `k8s/knative-service.yaml`
+  now carries the matching label.
+- **NetworkPolicy egress is usable.** Added DNS (UDP/TCP 53 to `kube-system`)
+  and an `ipBlock` rule for off-cluster object storage; a `namespaceSelector`
+  cannot express an external destination, so the previous policy would have
+  hung model loading. The standalone policy excludes the cloud metadata
+  endpoint and RFC1918 ranges.
+- **Ingress restricted** to the ingress-controller namespace rather than every
+  namespace in the cluster.
+- **Pod hardening added** to the chart and the Knative Service: `runAsNonRoot`,
+  non-root uid/gid, `allowPrivilegeEscalation: false`, `capabilities.drop:
+  ["ALL"]`, `readOnlyRootFilesystem: true`, and `seccompProfile:
+  RuntimeDefault`. A namespace enforcing the `restricted` Pod Security Standard
+  should now admit the Pod.
+- **Trivy is blocking.** The scan set no `exit-code`, so a critical CVE was
+  reported and then pushed and deployed anyway. Now `exit-code: '1'` with
+  `severity: 'CRITICAL,HIGH'` and `ignore-unfixed: true`.
+- **Image tag names its registry.** The build tagged `example/vllm:<sha>` while
+  the login targeted `ghcr.io`, so the push resolved to Docker Hub rather than
+  the authenticated registry. Build, scan, push and Helm upgrade now share one
+  `IMAGE` variable.
+- **RoleBinding subject is explicitly namespaced.** Without it the subject
+  resolved to the RoleBinding's own namespace, so applying the file across
+  namespaces bound the Role to an account that was not there.
+
+### Added
+
+- `.github/workflows/manifests.yml` — validates the deployment layer on every
+  change to `helm/`, `k8s/` or `gitops/`: `helm lint`, both renders,
+  `kubeconform -strict`, and assertions against the specific regressions above
+  (selector match, pod hardening fields, GPU limit, all three probes, Ingress
+  class and TLS). Nothing in CI previously exercised these files before
+  `helm upgrade --install` ran against a live cluster.
+- Startup, readiness and liveness probes. The startup probe carries a 10-minute
+  budget because weights stream from object storage into GPU memory; readiness
+  gates traffic so a Pod is not routed requests mid-load.
+- GPU and memory `requests`/`limits` (`nvidia.com/gpu: 1` by default).
+- `ingressClassName` and a TLS block on the Ingress, both on by default.
+- `helm/tensorizer-vllm/templates/_helpers.tpl` — selector and metadata labels
+  defined once, so a selector cannot drift from what it targets again.
+- Standard `app.kubernetes.io/*` labels on every object.
+
+### Changed
+
+- `helm/tensorizer-vllm/values.yaml` gained `serviceAccount`,
+  `podSecurityContext`, `securityContext`, `resources`, `probes`, `ingress` and
+  `networkPolicy` sections, each commented with what it does and why.
+  `networkPolicy.enabled` defaults to `false`: its egress rules need your
+  bucket's addresses before they are useful.
+- `docs/security.md` rewritten. Sections 1, 2, 4 and 5 now separate what is
+  fixed from what is still true, the summary table is re-scored, and the
+  hardening order records six of eight original items as done with the
+  remainder re-prioritised. S3 credentials in environment variables is now the
+  largest open gap.
+
+### Known gaps
+
+Unchanged by this release: credentials still reach the container as environment
+variables, the Knative Secret name is still hard-coded, CI still holds a
+full-scope kubeconfig, Cosign/SBOM/admission verification remain unimplemented,
+there is no encryption-key management in the serving path, and **none of this
+has been run against a live GPU cluster**.
 
 ---
 

@@ -1,7 +1,16 @@
+# Standalone policy for the raw manifests in this directory (the Knative
+# Service below carries the matching label). The Helm chart ships its own
+# NetworkPolicy templated from the chart's selector labels -- see
+# helm/tensorizer-vllm/templates/networkpolicy.yaml -- because this file's
+# hard-coded selector cannot match a release-named Pod.
+#
+# NetworkPolicy is enforced only by a CNI that implements it. On a CNI that
+# ignores it, this file provides no protection.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: tensorizer-allow
+  namespace: default
 spec:
   podSelector:
     matchLabels:
@@ -11,13 +20,42 @@ spec:
     - Egress
   ingress:
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
       ports:
         - protocol: TCP
           port: 8000
   egress:
+    # DNS. Without this the Pod cannot resolve the object-storage endpoint and
+    # model loading hangs instead of failing legibly.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # In-cluster HTTPS.
     - to:
         - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+    # Off-cluster object storage. A namespaceSelector cannot express an
+    # external destination, so S3 outside the cluster needs an explicit
+    # ipBlock. Narrow this to your bucket's ranges; the metadata service is
+    # excluded so a compromised Pod cannot mint cloud credentials from it.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
       ports:
         - protocol: TCP
           port: 443

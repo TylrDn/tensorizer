@@ -2,15 +2,42 @@ apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: tensorizer-knative
+  namespace: default
 spec:
   template:
     metadata:
+      labels:
+        # Matches the podSelector in k8s/networkpolicy.yaml. Without this label
+        # the policy in that file selects nothing and is inert.
+        app: tensorizer
       annotations:
         autoscaling.knative.dev/minScale: "0"
+        # Weights stream from object storage into GPU memory. Knative's default
+        # revision timeout is far shorter than a cold model load.
+        autoscaling.knative.dev/scaleToZeroPodRetentionPeriod: "15m"
     spec:
+      serviceAccountName: tensorizer-sa
       containers:
         - image: vllm/vllm:0.2.2
           args: ["serve", "--model", "s3://my-bucket/models/tiny-gpt2.tensors", "--tensorizer"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: 1
           env:
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
@@ -24,3 +51,18 @@ spec:
                   key: secretAccessKey
           ports:
             - containerPort: 8000
+          # Knative derives readiness from the container port when no probe is
+          # given, which marks the revision ready before weights have loaded.
+          # An explicit startup budget keeps traffic away until /health answers.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 5

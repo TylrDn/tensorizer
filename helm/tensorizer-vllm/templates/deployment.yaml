@@ -2,22 +2,59 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Release.Name }}
+  labels:
+    {{- include "tensorizer-vllm.labels" . | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: {{ .Release.Name }}
+      {{- include "tensorizer-vllm.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: {{ .Release.Name }}
+        {{- include "tensorizer-vllm.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "tensorizer-vllm.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: vllm
           image: {{ .Values.image }}
           args: ["serve", "--model", "{{ .Values.modelURI }}", "--tensorizer"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
-            - containerPort: 8000
+            - name: http
+              containerPort: 8000
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.probes.enabled }}
+          # Weights stream from object storage into GPU memory, which can take
+          # minutes. The startup probe absorbs that; until it succeeds neither
+          # liveness nor readiness runs, so a slow load is not mistaken for a
+          # hung process and the Pod receives no traffic.
+          startupProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: {{ .Values.probes.port }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: {{ .Values.probes.port }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.probes.path }}
+              port: {{ .Values.probes.port }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
           {{- if .Values.s3.secretName }}
           env:
             - name: AWS_ACCESS_KEY_ID
@@ -31,3 +68,26 @@ spec:
                   name: {{ .Values.s3.secretName }}
                   key: secretAccessKey
           {{- end }}
+          {{- if .Values.securityContext.readOnlyRootFilesystem }}
+          # With a read-only root filesystem the paths vLLM and PyTorch write to
+          # at runtime -- compiled-kernel caches, downloaded artifacts, shared
+          # memory for tensor parallelism -- must be mounted writable.
+          volumeMounts:
+            - name: cache
+              mountPath: /root/.cache
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+          {{- end }}
+      {{- if .Values.securityContext.readOnlyRootFilesystem }}
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      {{- end }}

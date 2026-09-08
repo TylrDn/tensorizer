@@ -1,12 +1,24 @@
+# Optional read-only grant for deployments that want the serving Pod to see
+# Pods in its own namespace. The Helm chart does NOT use this by default: it
+# creates its own ServiceAccount with no Role at all, because a serving
+# container has no reason to reach the API server. To use this instead, set
+# serviceAccount.create=false and serviceAccount.name=tensorizer-sa.
+#
+# Every object here is namespace-scoped. Apply the whole file into one
+# namespace; a RoleBinding cannot grant across namespaces.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: tensorizer-sa
+  namespace: default
+# A workload that does not call the API server should not carry a token.
+automountServiceAccountToken: false
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: tensorizer-role
+  namespace: default
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -16,9 +28,14 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: tensorizer-rolebinding
+  namespace: default
 subjects:
   - kind: ServiceAccount
     name: tensorizer-sa
+    # Without an explicit namespace the subject resolves to the RoleBinding's
+    # own namespace, so applying this file across namespaces silently bound
+    # the Role to an account that was not there.
+    namespace: default
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role

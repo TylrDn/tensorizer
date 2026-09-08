@@ -1,0 +1,140 @@
+name: manifests
+
+# Validates the deployment layer this fork adds. Before this workflow existed
+# nothing in CI exercised the Helm chart or the k8s manifests beyond whatever
+# `helm upgrade --install` happened to catch at deploy time -- which is after
+# the image has already been pushed.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'helm/**'
+      - 'k8s/**'
+      - 'gitops/**'
+      - '.github/workflows/manifests.yml'
+  pull_request:
+    paths:
+      - 'helm/**'
+      - 'k8s/**'
+      - 'gitops/**'
+      - '.github/workflows/manifests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@b4ffde82f28162d9a60b3dfb39e4f2447a3b1c7f
+
+      - name: Set up Helm
+        uses: azure/setup-helm@e9a68a7554547a8bb11e9a56ce3cfd31c8eaa974
+        with:
+          version: v3.16.3
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: helm lint
+        run: helm lint helm/tensorizer-vllm
+
+      - name: Chart renders and validates (defaults)
+        run: |
+          helm template tensorizer helm/tensorizer-vllm \
+            | kubeconform -strict -summary -
+
+      - name: Chart renders and validates (all features enabled)
+        # Exercises the paths the defaults leave off, so a broken NetworkPolicy
+        # or TLS block is caught here rather than at deploy time.
+        run: |
+          helm template tensorizer helm/tensorizer-vllm \
+            --set networkPolicy.enabled=true \
+            --set 'networkPolicy.egressIPBlocks[0].cidr=10.0.0.0/8' \
+            --set s3.secretName=s3-credentials \
+            --set ingress.tls.secretName=vllm-tls \
+            | kubeconform -strict -summary -
+
+      - name: Raw manifests validate
+        # The Knative Service is a CRD whose schema is not in the default
+        # catalogue, so it is skipped rather than failed.
+        run: kubeconform -strict -summary -ignore-missing-schemas k8s/
+
+      - name: NetworkPolicy selector matches the chart's pods
+        # The standalone policy in k8s/ once selected `app: tensorizer` while
+        # the chart labelled pods `app: <release>`, so the policy protected
+        # nothing. This asserts the two agree.
+        run: |
+          set -euo pipefail
+          rendered=$(helm template tensorizer helm/tensorizer-vllm --set networkPolicy.enabled=true)
+          echo "$rendered" | python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+          pod_labels = next(
+              d["spec"]["template"]["metadata"]["labels"]
+              for d in docs if d["kind"] == "Deployment"
+          )
+          selector = next(
+              d["spec"]["podSelector"]["matchLabels"]
+              for d in docs if d["kind"] == "NetworkPolicy"
+          )
+          missing = {k: v for k, v in selector.items() if pod_labels.get(k) != v}
+          if missing:
+              sys.exit(f"NetworkPolicy selects labels the Pod does not carry: {missing}")
+          print(f"NetworkPolicy selector {selector} matches the Deployment's pod labels")
+          PY
+
+      - name: Pod spec carries the hardening the chart promises
+        run: |
+          set -euo pipefail
+          helm template tensorizer helm/tensorizer-vllm | python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+          spec = next(d["spec"]["template"]["spec"] for d in docs if d["kind"] == "Deployment")
+          container = spec["containers"][0]
+          problems = []
+          if not spec.get("serviceAccountName"):
+              problems.append("no serviceAccountName, so k8s RBAC binds to nothing")
+          if spec.get("automountServiceAccountToken") is not False:
+              problems.append("service account token is mounted into a serving pod")
+          if not spec.get("securityContext", {}).get("runAsNonRoot"):
+              problems.append("pod may run as root")
+          sc = container.get("securityContext", {})
+          if sc.get("allowPrivilegeEscalation") is not False:
+              problems.append("privilege escalation not disabled")
+          if "ALL" not in sc.get("capabilities", {}).get("drop", []):
+              problems.append("capabilities not dropped")
+          limits = container.get("resources", {}).get("limits", {})
+          if "nvidia.com/gpu" not in limits:
+              problems.append("no GPU limit")
+          for probe in ("startupProbe", "readinessProbe", "livenessProbe"):
+              if probe not in container:
+                  problems.append(f"no {probe}")
+          if problems:
+              sys.exit("Pod spec regressions:\n  - " + "\n  - ".join(problems))
+          print("Pod spec carries serviceAccountName, securityContext, GPU limits and all three probes")
+          PY
+
+      - name: Ingress serves TLS through a named class
+        run: |
+          set -euo pipefail
+          helm template tensorizer helm/tensorizer-vllm | python3 - <<'PY'
+          import sys, yaml
+          docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+          ing = next((d for d in docs if d["kind"] == "Ingress"), None)
+          if ing is None:
+              sys.exit("no Ingress rendered")
+          problems = []
+          if not ing["spec"].get("ingressClassName"):
+              problems.append("no ingressClassName, so the route depends on a cluster default")
+          if not ing["spec"].get("tls"):
+              problems.append("no tls block, so the route is plain HTTP")
+          if problems:
+              sys.exit("Ingress regressions:\n  - " + "\n  - ".join(problems))
+          print("Ingress declares an ingressClassName and a TLS block")
+          PY

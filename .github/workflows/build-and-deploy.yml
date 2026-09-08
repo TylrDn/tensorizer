@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main ]
 
+env:
+  IMAGE: ghcr.io/${{ github.repository }}/vllm:${{ github.sha }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,11 +27,22 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_DATA }}" | base64 -d > ~/.kube/config
       - name: Build
-        run: docker build -t example/vllm:${{ github.sha }} .
+        # Tagged for the registry we authenticate against below. The previous
+        # tag carried no registry prefix, so the push resolved to Docker Hub
+        # rather than the ghcr.io login that precedes it.
+        run: docker build -t "$IMAGE" .
       - name: Scan
         uses: aquasecurity/trivy-action@4d1a13b66e041b35769128a8b06845050806e06e
         with:
-          image-ref: example/vllm:${{ github.sha }}
+          image-ref: ${{ env.IMAGE }}
+          # Blocking. Without exit-code the action reports findings and the job
+          # carries on, so a critical CVE reached the registry and the cluster.
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+          # A vulnerability with no available fix cannot be actioned by this
+          # pipeline; it is reported by the scheduled scan instead of wedging
+          # every deploy.
+          ignore-unfixed: true
       - name: Login
         uses: docker/login-action@ee0af82ac35b689a7dce1aa3e9e4b0943aa53d25
         with:
@@ -36,10 +50,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push
-        run: docker push example/vllm:${{ github.sha }}
+        run: docker push "$IMAGE"
       - name: Helm Upgrade
         run: |
           helm upgrade --install tensorizer helm/tensorizer-vllm \
-            --set image=example/vllm:${{ github.sha }} \
+            --set image="$IMAGE" \
             --namespace test \
             --create-namespace

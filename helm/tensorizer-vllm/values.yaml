@@ -1,5 +1,106 @@
 image: "vllm/vllm:0.2.2"
 modelURI: "s3://my-bucket/models/tiny-gpt2.tensors"
 host: "vllm.example.com"
+
 s3:
+  # Name of an existing Secret holding keys `accessKeyId` and `secretAccessKey`.
+  # Empty (the default) injects no credentials at all.
   secretName: ""
+
+serviceAccount:
+  # Create a ServiceAccount for the workload. The inference Pod needs no access
+  # to the API server, so the account it runs under carries no Role and its
+  # token is not mounted (see automountServiceAccountToken below).
+  create: true
+  # Leave empty to use the release name. Set this to bind the Pod to an account
+  # you manage yourself -- for example `tensorizer-sa` from k8s/rbac.yaml.
+  name: ""
+  # A pure serving workload has no reason to hold an API token.
+  automountServiceAccountToken: false
+
+# Pod- and container-level hardening. These defaults satisfy the "restricted"
+# Pod Security Standard; a namespace enforcing it will reject a Pod without them.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  privileged: false
+  capabilities:
+    drop:
+      - ALL
+  # vLLM compiles and caches kernels at startup and needs a writable filesystem.
+  # The writable paths are provided as emptyDir volumes instead, so the image
+  # itself stays read-only.
+  readOnlyRootFilesystem: true
+
+# GPU serving is the whole point of this chart, so a GPU limit is set by default.
+# Kubernetes requires that an extended resource such as nvidia.com/gpu appear in
+# limits; requests are set to match. Tune memory to the model you are serving.
+resources:
+  requests:
+    cpu: "2"
+    memory: "8Gi"
+    nvidia.com/gpu: 1
+  limits:
+    cpu: "4"
+    memory: "16Gi"
+    nvidia.com/gpu: 1
+
+# Streaming weights from object storage into GPU memory can take minutes, so the
+# startup probe is given a long budget while liveness and readiness stay tight.
+# Readiness gates traffic, so a Pod is not routed requests mid-load.
+probes:
+  enabled: true
+  path: /health
+  port: 8000
+  startup:
+    periodSeconds: 10
+    # 10s * 60 = up to 10 minutes for weights to finish streaming.
+    failureThreshold: 60
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+ingress:
+  enabled: true
+  # Name the controller explicitly; without it the cluster's default
+  # IngressClass is used, which may be none at all.
+  className: "nginx"
+  annotations: {}
+  tls:
+    # Serve the route over HTTPS. Set secretName to an existing TLS Secret, or
+    # leave it empty and let cert-manager fill it via the annotations above.
+    enabled: true
+    secretName: ""
+
+networkPolicy:
+  # The NetworkPolicy in k8s/networkpolicy.yaml selects `app: tensorizer` and so
+  # matches nothing this chart creates. This one is templated with the chart's
+  # own selector labels, so it always matches the Pods it is meant to protect.
+  # NetworkPolicy is enforced only by a CNI that implements it.
+  enabled: false
+  # Restrict ingress to the namespaces running your ingress controller rather
+  # than every namespace in the cluster.
+  ingressNamespaceSelector:
+    kubernetes.io/metadata.name: ingress-nginx
+  # Object storage is normally off-cluster, and a namespaceSelector cannot
+  # express an external destination. List the CIDRs your bucket resolves to;
+  # leaving this empty means the Pod cannot reach external S3 at all.
+  egressIPBlocks: []
+  # e.g.
+  #   - cidr: 0.0.0.0/0
+  #     except:
+  #       - 169.254.169.254/32   # block cloud instance metadata
+  dnsNamespaceSelector:
+    kubernetes.io/metadata.name: kube-system
